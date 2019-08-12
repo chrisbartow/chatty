@@ -24,6 +24,7 @@ The following commands are avaible via chat:
 
     !stats - Your chat stastics.
     !top - Top chatters for current session.
+    !topall - Top chatters of all time.
 
     !aq The Quote. @Username - Add a quote for chatter.
     !dq # - Delete a quote using ID.
