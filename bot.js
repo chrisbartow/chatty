@@ -112,6 +112,10 @@ function exitBot() {
     rl.question('Are you sure you want to close your bot? (Y/n) ', (answer) => {
         if (answer === "" || (/^y(es)?$/i).test(answer)) {
             rl.close();
+
+            // Write out final cache data
+            updateDBfromCache();
+
             process.exit();
         }
     });
@@ -129,6 +133,7 @@ var chatters = new Array();
 // Called every time the bot connects to Twitch chat
 function onConnectedHandler(addr, port) {
     console.log(`Connected to ${addr}:${port}`);
+    var dbcache = setInterval(updateDBfromCache, 30000);
 }
 
 // Called every time a message comes in
@@ -166,10 +171,19 @@ function onMessageHandler(target, context, message, self) {
     }
 
     // !top show top chatters for today
-    if (/^!top/i.test(msg)) {
-        db.all(`SELECT name, xp FROM chatters ORDER BY xp DESC LIMIT 10`, [], (err, rows) => {
+    if (/^!top(?!all)/i.test(msg)) {
+        db.all(`SELECT name, xp FROM chatters WHERE session = ? ORDER BY xp DESC LIMIT 10`, [session], (err, rows) => {
             if (err) throw err;
             client.say(target, "The most chatty people today are: " + rows.map(chatter => `${chatter.name} (${chatter.xp})`).join(', '));
+        });
+        return;
+    }
+
+    // !topall show top chatters for alltime
+    if (/^!topall/i.test(msg)) {
+        db.all(`SELECT name, SUM(xp) as xp, SUM(words) as words FROM chatters GROUP BY id ORDER BY xp DESC LIMIT 10`, [], (err, rows) => {
+            if (err) throw err;
+            client.say(target, "The most chatty people all time are: " + rows.map(chatter => `${chatter.name} (${chatter.xp})`).join(', '));
         });
         return;
     }
@@ -216,19 +230,22 @@ function onMessageHandler(target, context, message, self) {
     // Check to see if in local cache
 
     var chatterUpdate = {
+        "id": id,
         "name": context['display-name']
     }
 
-    if (chatters[id]) {
+    const chatterIdx = chatters.findIndex(x => x.id === id);
 
-        // Cache Available. Update it.
+    if (chatterIdx !== -1) {
+        // Cache Available. Let's update it.
         Object.assign(chatterUpdate, {
-            "lines": chatters[id].lines + 1,
-            "xp": chatters[id].xp + xp,
-            "words": chatters[id].words + msg.split(' ').length,
-            "emotes": chatters[id].emotes + emotes,
+            "lines": chatters[chatterIdx].lines + 1,
+            "xp": chatters[chatterIdx].xp + xp,
+            "words": chatters[chatterIdx].words + msg.split(' ').length,
+            "emotes": chatters[chatterIdx].emotes + emotes,
+            "update": true
         });
-        updateChatters(id, chatterUpdate);
+        chatters[chatterIdx] = chatterUpdate;
 
     } else {
 
@@ -243,7 +260,8 @@ function onMessageHandler(target, context, message, self) {
                     "lines": result.lines + 1,
                     "xp": result.xp + xp,
                     "words": result.words + msg.split(' ').length,
-                    "emotes": result.emotes + emotes
+                    "emotes": result.emotes + emotes,
+                    "update": true
                 });
 
             } else {
@@ -252,12 +270,13 @@ function onMessageHandler(target, context, message, self) {
                     "lines": 1,
                     "xp": xp,
                     "words": msg.split(' ').length,
-                    "emotes": emotes
+                    "emotes": emotes,
+                    "update": true
                 });
 
             }
-            // Update Database and cache
-            updateChatters(id, chatterUpdate);
+            // Add data to the player cache
+            chatters.push(chatterUpdate);
 
         });
 
@@ -265,17 +284,18 @@ function onMessageHandler(target, context, message, self) {
 
 }
 
-function updateChatters(id, data) {
-    // Update Cache
-    chatters[id] = data;
-
-    // Update Database
+function updateDBfromCache() {
     var stmt = db.prepare(
         `REPLACE INTO chatters (id, session, name, lines, xp, words, emotes) 
             VALUES (?, ?, ?, ?, ?, ?, ?)`
     );
-
-    stmt.run(id, session, data.name, data.lines, data.xp, data.words, data.emotes);
-
+    chatters.forEach(function(data, index) {
+        if (data.update) {
+            // Replace data into database
+            stmt.run(data.id, session, data.name, data.lines, data.xp, data.words, data.emotes);
+            // Reset Update Flag for this chatter   
+            chatters[index].update = false;
+        }
+    });
     stmt.finalize();
 }
